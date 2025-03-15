@@ -59,7 +59,7 @@ Future<void> handleSectionCommand(
       printSectionList(section, config);
     }
   } else if (args[0] == 'use' && args.length >= 2) {
-    await useCommand(section, args[1]);
+    await useCommand(section, args[1], config);
 
     final addEntries = config
             .items(section)
@@ -90,15 +90,15 @@ Future<void> handleSectionCommand(
     }
   } else if (args[0] == 'unset') {
     // 新增 unset 命令
-    await unsetCommand(section);
+    await unsetCommand(section, config);
     await removeEnvironmentVariables(section, config);
   } else if (args[0] == 'remove' && args.length >= 2) {
-    await removePackage(section, args[1]);
+    await removePackage(section, args[1], config);
   }
 }
 
 // 新增移除方法
-Future<void> removePackage(String section, String version) async {
+Future<void> removePackage(String section, String version, Config config) async {
   final installDir = Directory('install/$section/$version');
   if (!installDir.existsSync()) {
     print('未安装 $section $version');
@@ -107,7 +107,7 @@ Future<void> removePackage(String section, String version) async {
 
   try {
     print('正在移除 $section/$version...');
-    unsetCommand(section);
+    unsetCommand(section, config);
     installDir.deleteSync(recursive: true);
     print('移除成功');
   } catch (e) {
@@ -134,27 +134,48 @@ String _getUserPath() {
 }
 
 // 新增删除软链接方法
-Future<void> unsetCommand(String section) async {
-  final pathFindDir = Directory('install/$section');
-  final matchStr = pathFindDir.absolute.path.replaceAll('/', '\\');
+Future<void> unsetCommand(String section, Config config) async {
 
-  if (pathFindDir.existsSync()) {
-    // PATH 清理逻辑
-    final userPath =
-        _getUserPath().replaceAllMapped(RegExp(r'(?<!\\)%'), (m) => '^%');
-    
-    var pathList = userPath.split(';');
-    List<String> newPathList = [];
-  
-    for (var p in pathList) {
-      if (p.isNotEmpty && !p.toLowerCase().contains(matchStr.toLowerCase())) {
-        newPathList.add(p);
-      }
-    }
+  // 获取所有需要清理的路径
+  final pathsToRemove = <String>[];
 
-    final newPath = newPathList.join(';');
-    await setUserEnvironmentVariable('PATH', newPath);
+  // 1. 添加 install 目录路径
+  final installDir = Directory('install/$section');
+  if (installDir.existsSync()) {
+    pathsToRemove.add(installDir.absolute.path.replaceAll('/', '\\'));
   }
+
+  // 2. 添加配置中的本地路径
+  final localPaths = config.items(section)
+      ?.where((item) => item.length >= 2 && 
+          !(item[1]?.startsWith('http') ?? true) &&
+          !(item[1]?.startsWith('https') ?? true))
+      .map((item) => item[1]!.replaceAll('"', '')) // 去除引号
+      .expand((path) => path.split(';'))           // 展开多路径
+      .map((p) => p.trim())                        // 去除空格
+      .where((p) => p.isNotEmpty)                  // 过滤空路径
+      .map((p) => p.replaceAll('/', Platform.pathSeparator)) // 统一路径格式
+      .toList() ?? [];
+
+  pathsToRemove.addAll(localPaths);
+
+  // PATH 清理逻辑
+  final userPath = _getUserPath().replaceAllMapped(RegExp(r'(?<!\\)%'), (m) => '^%');
+  var pathList = userPath.split(';');
+
+  List<String> newPathList = [];
+  for (var p in pathList) {
+    if (p.isEmpty) continue;
+    // 检查路径是否需要保留
+    final shouldKeep = pathsToRemove.every((removePath) => 
+        !p.toLowerCase().contains(removePath.toLowerCase()));
+    if (shouldKeep) {
+      newPathList.add(p);
+    }
+  }
+
+  final newPath = newPathList.join(';');
+  await setUserEnvironmentVariable('PATH', newPath);
 }
 
 // 新增环境变量移除方法
@@ -218,13 +239,25 @@ Future<void> setUserEnvironmentVariable(String varName, String value) async {
 }
 
 // 新增模块状态生成辅助方法
-String _getModuleStatus(String section) {
+String _getModuleStatus(String section, Config config) {
+
+  // 获取本地路径版本
+  final localVersions = config.items(section)
+      ?.where((item) => item.length >= 2 && 
+          !(item[1]?.startsWith('http') ?? true) && 
+          !(item[1]?.startsWith('https') ?? true))
+      .map((item) => item[0]!)
+      .toList() ?? [];
+
   // 获取已安装版本
-  final installed = Directory('install/$section')
-      .listSync()
-      .whereType<Directory>()
-      .map((d) => d.path.split('\\').last)
-      .toList();
+  final installDir = Directory('install/$section');
+  final installedVersions = installDir.existsSync()
+      ? installDir
+          .listSync()
+          .whereType<Directory>()
+          .map((d) => d.path.split('\\').last)
+          .toSet()
+      : <String>{};
 
   // 获取使用中的版本
   final userPath = _getUserPath().toLowerCase().split(';');
@@ -251,8 +284,10 @@ String _getModuleStatus(String section) {
   final status = StringBuffer();
   if (version.isNotEmpty) {
     status.write('* $version');
-  } else if (installed.isNotEmpty) {
-    status.write('# ${installed.first}');
+  } else if (installedVersions.isNotEmpty) {
+    status.write('@ ${installedVersions.first}');
+  } else if (localVersions.isNotEmpty) {
+    status.write('# ${localVersions.first}'); 
   } else {
     status.write('none');
   }
@@ -268,7 +303,7 @@ void printAllModulesStatus(Config config) {
   // 首次遍历收集最大长度
   for (final section in config.sections()) {
     // ... 状态生成逻辑与之前相同 ...
-    final status = _getModuleStatus(section); // 假设抽取出状态生成逻辑
+    final status = _getModuleStatus(section, config); // 假设抽取出状态生成逻辑
     
     maxNameLength = math.max(maxNameLength, section.length);
     maxStatusLength = math.max(maxStatusLength, status.length);
@@ -288,11 +323,34 @@ void printAllModulesStatus(Config config) {
 
   // 打印数据行
   for (final section in config.sections()) {
-    final status = _getModuleStatus(section);
+    final status = _getModuleStatus(section, config);
     print('| ${section.padRight(nameWidth-2)} | ${status.padRight(statusWidth-2)} |');
     print(borderLine);
   }
 }
+
+// 新增本地路径使用状态检查方法
+bool _isLocalPathInUse(Config config, String section, String path) {
+  final localEntries = config.items(section)
+      ?.where((item) => item.length >= 2 && 
+          !item[1]!.startsWith('http') && 
+          !item[1]!.startsWith('https'))
+      .toList() ?? [];
+
+  return localEntries.any((entry) {
+    final cleanedPath = entry[1]!.replaceAll('"', '').split(';');
+
+    for (var p in cleanedPath) {
+      if(p.isEmpty) continue;
+      p = p.toLowerCase().replaceAll('/', Platform.pathSeparator);
+      if (path.contains(p)) {
+        return true;
+      }
+    }
+    return false; 
+  });
+}
+
 
 // 通用列表打印
 void printSectionList(String section, Config config) {
@@ -304,10 +362,19 @@ void printSectionList(String section, Config config) {
       .toList() ?? [];
 
   // 获取已安装版本
-  final installedVersions = Directory('install/$section')
-      .listSync()
-      .whereType<Directory>()
-      .map((d) => d.path.split('\\').last)
+  final installDir = Directory('install/$section');
+  final installedVersions = installDir.existsSync()
+      ? installDir
+          .listSync()
+          .whereType<Directory>()
+          .map((d) => d.path.split('\\').last)
+          .toSet()
+      : <String>{};
+
+  // 本地路径检测
+  final localPaths = items
+      .where((entry) => !entry.value.startsWith('http') && !entry.value.startsWith('https'))
+      .map((entry) => entry.key)
       .toSet();
 
   // 获取当前使用的路径
@@ -327,17 +394,51 @@ void printSectionList(String section, Config config) {
       .where((v) => v != null)
       .toSet();
 
+  final pathInUseVerion = userPath.where((p) => _isLocalPathInUse(config, section, p)).toSet();
+  Set<String> inUseVersion3 = <String>{};
+  
+  // 新增：建立路径与版本的映射关系
+  final pathVersionMap = <String, String>{};
+  config.items(section)?.forEach((entry) {
+    if (entry.length >= 2) {
+      final version = entry[0]!;
+      // 新增引号移除逻辑
+      final rawValue = entry[1]!.replaceAll(RegExp(r'^"|"$'), '');
+      final paths = rawValue.split(';');
+      for (var p in paths) {
+        p = p.trim().toLowerCase().replaceAll('/', Platform.pathSeparator);
+        if (p.isNotEmpty) {
+          pathVersionMap[p] = version;
+        }
+      }
+    }
+  });
+  
+  // 检查当前使用的路径对应的版本
+  pathInUseVerion.forEach((usedPath) {
+    final normalizedPath = usedPath.toLowerCase().replaceAll('/', Platform.pathSeparator);
+    pathVersionMap.forEach((path, version) {
+      if (normalizedPath == path) {
+        inUseVersion3.add(version);
+      }
+    });
+  });
+
   // 生成带状态的列表项
   final entries = items.map((entry) {
 
     final version = entry.key;
     final isInstalled = installedVersions.contains(version);
-    final isInUse = inUseVersions.contains(version);
+    final isLocal = localPaths.contains(version);
+    final isInUse = inUseVersions.contains(version) || inUseVersion3.contains(version);
     
     final status = StringBuffer();
     if (isInUse) {
       status.write(' * ');
     } else if (isInstalled) {
+      status.write(' @ ');
+    }
+    else if (isLocal) {
       status.write(' # ');
     }
     else {
@@ -352,16 +453,19 @@ void printSectionList(String section, Config config) {
   // 动态计算列宽（最大条目长度 + 10）
   final maxEntryLength = entries.fold<int>(0, 
     (max, e) => e.length > max ? e.length : max);
-  final colWidth = maxEntryLength + 3;
+  var colWidth = maxEntryLength + 3;
 
-  final borderLine = '+${'-' * colWidth}+${'-' * colWidth}+${'-' * colWidth}+';
-  
   // 精确计算说明行对齐
-  final legend = '* : used,  # : installed';
+  final legend = '* : used,  @ : installed,  # : local';
+  if ((colWidth * 3 + 2) < legend.length) {
+    colWidth = legend.length ~/ 3 + 1;
+  }
+
   final totalSpace = colWidth * 3 + 2; // 3列总字符数（62）
   final padding = totalSpace - legend.length;
   final leftPad = (padding / 2).floor();
-  
+
+  final borderLine = '+${'-' * colWidth}+${'-' * colWidth}+${'-' * colWidth}+';
   print(borderLine);
   print('|${' ' * leftPad}$legend${' ' * (padding - leftPad)}|');
   print(borderLine);
@@ -387,6 +491,11 @@ Future<void> installPackage(
     return;
   }
 
+  if (!url.startsWith('http') && !url.startsWith('https')) {
+      print('$version 是本地安装，无需下载');
+      return;
+  }
+
   try {
     final cacheDir = Directory('cache/$section/$version');
     cacheDir.createSync(recursive: true);  // 目录创建
@@ -407,8 +516,7 @@ Future<void> installPackage(
 
     if (cachedFile.existsSync()) {
       downloadedBytes = cachedFile.lengthSync();
-      print("发现缓存: (${_formatBytes(downloadedBytes)}) " 
-            "${cachedFile.absolute.path.replaceAll('/', '\\')}");
+      print("发现缓存: ${cachedFile.absolute.path.replaceAll('/', '\\')}");
 
       // 完整文件检测, 并检查服务器是否支持断点续传
       try {
@@ -522,11 +630,54 @@ String _formatBytes(int bytes) {
 }
 
 // 更新后的软链接创建方法
-Future<void> useCommand(String section, String version) async {
-  final targetDir = Directory('install/$section/$version');
-  final pathFindDir = Directory('install/$section');
+Future<void> useCommand(String section, String version, config) async {
 
-  // 新增路径查找方法
+  final url = config.get(section, version);
+  if (url == null) {
+    print('错误: 未找到版本 $version');
+    return;
+  }
+
+  if (!url.startsWith('http') && !url.startsWith('https')) {
+    // 新增多路径解析逻辑
+    final cleanedPath = url.replaceAll('"', ''); // 去除引号
+    final paths = cleanedPath.split(';')          // 按分号分割
+        .map((p) => p.trim())                     // 去除两端空格
+        .map((p) => p.replaceAll('/', Platform.pathSeparator)) // 统一路径格式
+        .toList();
+
+    // 检测路径是否存在
+    // final validPaths = paths.where((p) => 
+    //     Directory(p).existsSync() || File(p).existsSync()).toList();
+    // if (validPaths.isEmpty) {
+    //   print('错误: 所有本地路径均不存在 - ${paths.join(';')}');
+    //   return;
+    // }
+    final validPaths = paths;
+
+    try {
+      final targetPaths = validPaths.join(';');
+      unsetCommand(section, config);
+      final userPath = _getUserPath().replaceAllMapped(
+          RegExp(r'(?<!\\)%'), (m) => '^%');
+      final newPath = userPath.isEmpty ? targetPaths : '$targetPaths;$userPath';
+      await setUserEnvironmentVariable('PATH', newPath);
+      print('PATH += $targetPaths');
+    } catch (e) {
+      print('操作失败: $e');
+    }
+    return;
+  }
+
+  final targetDir = Directory('install/$section/$version');
+
+  // 安装状态检查
+  if (!targetDir.existsSync()) {
+    print('错误: 未安装版本 $version');
+    return;
+  }
+
+  // 查找最优的路径
   String findBestPath(Directory dir) {
     // 优先查找 bin 目录
     var current = dir;
@@ -564,15 +715,10 @@ Future<void> useCommand(String section, String version) async {
   try {
     final bestDir = findBestPath(targetDir);
   
-    if (!targetDir.existsSync()) {
-      print('错误: 未安装版本 $version');
-      return;
-    }
-
     // 统一转换为 Windows 路径格式
     final targetPath = bestDir.replaceAll('/', '\\');
 
-    unsetCommand(section);
+    unsetCommand(section, config);
 
     final userPath =
         _getUserPath().replaceAllMapped(RegExp(r'(?<!\\)%'), (m) => '^%');
