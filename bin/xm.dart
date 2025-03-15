@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:archive/archive_io.dart';
 import 'package:ini/ini.dart';
 import 'dart:math' as math;
+import 'package:stack_trace/stack_trace.dart';
 
 void main(List<String> args) async {
   final configFile = File('xm_config.ini');
@@ -388,23 +389,104 @@ Future<void> installPackage(
 
   try {
     final cacheDir = Directory('cache/$section/$version');
+    cacheDir.createSync(recursive: true);  // 目录创建
     final installDir = Directory('install/$section/$version');
 
     // 获取压缩包文件名
     final fileName = url.split('/').last;
     final cachedFile = File('${cacheDir.path}/$fileName');
+    final client = http.Client();
 
-    // 缓存检查逻辑
+    // 断点续传逻辑
+    int downloadedBytes = 0;
+    int totalBytes = 0;
+    bool resumeSupported = false;
+    bool needDownload = true;
+    
+    print('下载地址: $url');
+
     if (cachedFile.existsSync()) {
-      print('发现缓存文件 ${cachedFile.absolute.path.replaceAll('/', '\\')}');
-    } else {
-      // 仅在需要时下载
-      print('正在下载 $url');
-      print('到 ${cachedFile.absolute.path.replaceAll('/', '\\')}');
-      final response = await http.get(Uri.parse(url));
+      downloadedBytes = cachedFile.lengthSync();
+      print("发现缓存: (${_formatBytes(downloadedBytes)}) " 
+            "${cachedFile.absolute.path.replaceAll('/', '\\')}");
 
-      cacheDir.createSync(recursive: true);
-      cachedFile.writeAsBytesSync(response.bodyBytes, flush: true);
+      // 完整文件检测, 并检查服务器是否支持断点续传
+      try {
+        final headResponse = await client.head(Uri.parse(url));
+        totalBytes = int.parse(headResponse.headers['content-length'] ?? '0');
+        resumeSupported = headResponse.headers['accept-ranges'] == 'bytes';
+        
+        if (resumeSupported && downloadedBytes < totalBytes) {
+          print('尝试断点续传...');
+        } else if (downloadedBytes == totalBytes) {
+          print('文件已完整下载');
+          needDownload = false;
+        }
+      } catch (e) {
+        print('无法获取服务器信息: $e');
+      }
+    } else {
+      print('保存路径: ${cachedFile.absolute.path.replaceAll('/', '\\')}');
+    }
+
+    final request = http.Request('GET', Uri.parse(url));
+    if (resumeSupported && downloadedBytes > 0) {
+      request.headers['Range'] = 'bytes=$downloadedBytes-';
+    }
+
+    if (needDownload) {
+      try {
+        final response = await client.send(request);
+        totalBytes = (totalBytes == 0 || !resumeSupported) 
+            ? response.contentLength ?? 0 
+            : totalBytes;
+        
+        // 进度显示逻辑
+        final startTime = DateTime.now().millisecondsSinceEpoch;
+        int lastUpdate = 0;
+        
+        final output = cachedFile.openWrite(mode: 
+            resumeSupported ? FileMode.writeOnlyAppend : FileMode.write);
+
+        int currentDownloadBytes = 0;
+
+        await response.stream.listen(
+          (List<int> chunk) async {
+            downloadedBytes += chunk.length;
+            currentDownloadBytes += chunk.length;
+            final now = DateTime.now().millisecondsSinceEpoch;
+            
+            // 每秒更新一次进度
+            if (now - lastUpdate > 1000) {
+              final elapsed = math.max(1, ((now - startTime) / 1000));
+              final speed = currentDownloadBytes / elapsed;
+              final percent = totalBytes > 0 
+                  ? (downloadedBytes / totalBytes * 100).toStringAsFixed(1)
+                  : '??';
+
+              final displaySpeed = speed.isFinite ? speed.round() : 0;
+              stdout.write('\r下载进度: $percent% | '
+                  '${_formatBytes(downloadedBytes)} / ${_formatBytes(totalBytes)} | '
+                  '${_formatBytes(displaySpeed)}/s  ');
+              
+              lastUpdate = now;
+            }
+            output.add(chunk);
+          },
+          onDone: () async {
+            await output.flush();
+            await output.close();
+            stdout.write('\n');  // 换行结束进度条
+          },
+          onError: (e) {
+            print('\n下载中断: $e');
+            output.close();
+          },
+        ).asFuture();
+      } finally {
+        client.close();
+      }
+      print("\n");
     }
 
     // 新增文件类型识别
@@ -419,7 +501,7 @@ Future<void> installPackage(
       final gzip = GZipDecoder().decodeBytes(await cachedFile.readAsBytes());
       archive = TarDecoder().decodeBytes(gzip);
     } else {
-      throw Exception('不支持的压缩格式: $fileExtension');
+      throw Exception("不支持的压缩格式: $fileExtension");
     }
 
     extractArchiveToDisk(archive, installDir.path);
@@ -429,6 +511,14 @@ Future<void> installPackage(
   } catch (e) {
     print('安装失败: $e');
   }
+}
+
+// 新增辅助方法格式化字节数
+String _formatBytes(int bytes) {
+  if (bytes <= 0) return "0 B";
+  const suffixes = ["B", "KB", "MB", "GB"];
+  final i = (math.log(bytes) / math.log(1024)).floor();
+  return '${(bytes / math.pow(1024, i)).toStringAsFixed(1)} ${suffixes[i]}';
 }
 
 // 更新后的软链接创建方法
