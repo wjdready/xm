@@ -6,7 +6,11 @@ import 'dart:math' as math;
 import 'package:stack_trace/stack_trace.dart';
 
 void main(List<String> args) async {
-  final configFile = File('xm_config.ini');
+
+  // 获取当前执行文件所在目录
+  final exeDir = File(Platform.resolvedExecutable).parent;
+  // 修改配置文件路径为 exe 所在目录下的 xm_config.ini
+  final configFile = File('${exeDir.path}/xm_config.ini');
 
   if (!configFile.existsSync()) {
     print('找不到配置文件 xm_config.ini');
