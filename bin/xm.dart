@@ -745,7 +745,7 @@ Future<String> useCommand(String section, String version, config) async {
       final userPath = _getUserPath().replaceAllMapped(
           RegExp(r'(?<!\\)%'), (m) => '^%');
       final newPath = userPath.isEmpty ? targetPaths : '$targetPaths;$userPath';
-      print('newPath = $newPath');
+
       await setUserEnvironmentVariable('PATH', newPath);
       finalTargetPath = targetPaths.split(';').first;
       print('PATH += $targetPaths');
