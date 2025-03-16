@@ -94,7 +94,11 @@ Future<void> handleSectionCommand(
       printSectionList(section, config);
     }
   } else if (args[0] == 'use' && args.length >= 2) {
-    await useCommand(section, args[1], config);
+    final targetPath = await useCommand(section, args[1], config);
+
+    if (targetPath.isEmpty) {
+      return;
+    }
 
     final addEntries = config
             .items(section)
@@ -108,9 +112,6 @@ Future<void> handleSectionCommand(
             .toList() ??
         [];
 
-    final targetPath = Directory('link/$section')
-        .absolute.path.replaceAll('/', '\\');
-
     for (final entry in addEntries) {
       final parts = entry.split('=').map((e) => e.trim()).toList();
       if (parts.length != 2) continue;
@@ -120,7 +121,8 @@ Future<void> handleSectionCommand(
           .replaceAll(r'${CURRENT_USE_DIR}', targetPath)
           .replaceAllMapped(RegExp(r'(?<!\\)%'), (m) => '^%')
           // 引号过滤逻辑
-          .replaceAll(RegExp(r'^"|"$'), ''); // 去除开头和结尾的双引号;
+          .replaceAll(RegExp(r'^"|"$'), '');
+      print("$varName = $varValue");
       await setUserEnvironmentVariable(varName, varValue);
     }
   } else if (args[0] == 'unset') {
@@ -183,6 +185,7 @@ Future<void> unsetCommand(String section, Config config) async {
   // 2. 添加配置中的本地路径
   final localPaths = config.items(section)
       ?.where((item) => item.length >= 2 && 
+          !item[0]!.toLowerCase().startsWith('add') &&
           !(item[1]?.startsWith('http') ?? true) &&
           !(item[1]?.startsWith('https') ?? true))
       .map((item) => item[1]!.replaceAll('"', '')) // 去除引号
@@ -203,7 +206,7 @@ Future<void> unsetCommand(String section, Config config) async {
     if (p.isEmpty) continue;
     // 检查路径是否需要保留
     final shouldKeep = pathsToRemove.every((removePath) => 
-        !p.toLowerCase().contains(removePath.toLowerCase()));
+        !p.toLowerCase().contains(removePath.toLowerCase().replaceAllMapped(RegExp(r'(?<!\\)%'), (m) => '^%')));
     if (shouldKeep) {
       newPathList.add(p);
     }
@@ -279,6 +282,7 @@ String _getModuleStatus(String section, Config config, List<String> userPath) {
   // 获取本地路径版本
   final localVersions = config.items(section)
       ?.where((item) => item.length >= 2 && 
+          !item[0]!.toLowerCase().startsWith('add') &&
           !(item[1]?.startsWith('http') ?? true) && 
           !(item[1]?.startsWith('https') ?? true))
       .map((item) => item[0]!)
@@ -403,6 +407,7 @@ void printAllModulesStatus(Config config) {
 bool _isLocalPathInUse(Config config, String section, String path) {
   final localEntries = config.items(section)
       ?.where((item) => item.length >= 2 && 
+          !item[0]!.toLowerCase().startsWith('add') &&
           !item[1]!.startsWith('http') && 
           !item[1]!.startsWith('https'))
       .toList() ?? [];
@@ -427,7 +432,7 @@ void printSectionList(String section, Config config) {
 
   final items = config
       .items(section)
-      ?.where((item) => item.length >= 2) // Ensure key/value pairs
+      ?.where((item) => item.length >= 2 && !item[0]!.toLowerCase().startsWith('add')) 
       .map((item) => MapEntry(item[0]!, item[1]!))
       .toList() ?? [];
 
@@ -700,13 +705,15 @@ String _formatBytes(int bytes) {
 }
 
 // 更新后的软链接创建方法
-Future<void> useCommand(String section, String version, config) async {
+Future<String> useCommand(String section, String version, config) async {
 
   final url = config.get(section, version);
   if (url == null) {
     print('错误: 未找到版本 $version');
-    return;
+    return '';
   }
+
+  String finalTargetPath = '';
 
   if (!url.startsWith('http') && !url.startsWith('https')) {
     // 新增多路径解析逻辑
@@ -715,6 +722,8 @@ Future<void> useCommand(String section, String version, config) async {
         .map((p) => p.trim())                     // 去除两端空格
         .map((p) => p.replaceAll('/', Platform.pathSeparator)) // 统一路径格式
         .toList();
+    
+    print('本地路径: ${paths.join(';')}');
 
     // 检测路径是否存在
     // final validPaths = paths.where((p) => 
@@ -726,17 +735,20 @@ Future<void> useCommand(String section, String version, config) async {
     final validPaths = paths;
 
     try {
-      final targetPaths = validPaths.join(';');
+      final targetPaths = validPaths.join(';').replaceAllMapped(
+          RegExp(r'(?<!\\)%'), (m) => '^%');
       unsetCommand(section, config);
       final userPath = _getUserPath().replaceAllMapped(
           RegExp(r'(?<!\\)%'), (m) => '^%');
       final newPath = userPath.isEmpty ? targetPaths : '$targetPaths;$userPath';
+      print('newPath = $newPath');
       await setUserEnvironmentVariable('PATH', newPath);
+      finalTargetPath = targetPaths.split(';').first;
       print('PATH += $targetPaths');
     } catch (e) {
       print('操作失败: $e');
     }
-    return;
+    return finalTargetPath;
   }
 
   final targetDir = Directory('install/$section/$version');
@@ -744,7 +756,7 @@ Future<void> useCommand(String section, String version, config) async {
   // 安装状态检查
   if (!targetDir.existsSync()) {
     print('错误: 未安装版本 $version');
-    return;
+    return '';
   }
 
   // 查找最优的路径
@@ -795,8 +807,11 @@ Future<void> useCommand(String section, String version, config) async {
 
     final newPath = userPath.isEmpty ? targetPath : '$targetPath;$userPath';
     await setUserEnvironmentVariable('PATH', newPath);
+    finalTargetPath = targetPath.split(';').first;
     print('PATH += $targetPath');
   } catch (e) {
     print('操作失败: $e');
   }
+
+  return finalTargetPath;
 }

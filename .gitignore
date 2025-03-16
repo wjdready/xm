@@ -3,5 +3,5 @@
 .dart_tool/
 /install
 /cache
-/xm_config.ini
+/config.ini
 *.exe
