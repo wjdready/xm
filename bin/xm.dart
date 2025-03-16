@@ -5,12 +5,18 @@ import 'package:ini/ini.dart';
 import 'dart:math' as math;
 import 'package:stack_trace/stack_trace.dart';
 
+String thisExePath = '';
+
 void main(List<String> args) async {
 
   // 获取当前执行文件所在目录
-  final exeDir = File(Platform.resolvedExecutable).parent;
+  final scriptPath = Platform.script.toFilePath();
+  thisExePath = scriptPath.endsWith('bin\\xm.dart') 
+      ? File(scriptPath).parent.parent.path 
+      : File(Platform.resolvedExecutable).parent.path;
+
   // 修改配置文件路径为 exe 所在目录下的 xm_config.ini
-  final configFile = File('${exeDir.path}/xm_config.ini');
+  final configFile = File('$thisExePath/xm_config.ini');
 
   if (!configFile.existsSync()) {
     print('找不到配置文件 xm_config.ini');
@@ -140,7 +146,7 @@ Future<void> handleSectionCommand(
 
 // 新增移除方法
 Future<void> removePackage(String section, String version, Config config) async {
-  final installDir = Directory('install/$section/$version');
+  final installDir = Directory('$thisExePath/install/$section/$version');
   if (!installDir.existsSync()) {
     print('未安装 $section $version');
     return;
@@ -181,7 +187,7 @@ Future<void> unsetCommand(String section, Config config) async {
   final pathsToRemove = <String>[];
 
   // 1. 添加 install 目录路径
-  final installDir = Directory('install/$section');
+  final installDir = Directory('$thisExePath/install/$section');
   if (installDir.existsSync()) {
     pathsToRemove.add(installDir.absolute.path.replaceAll('/', '\\'));
   }
@@ -293,7 +299,7 @@ String _getModuleStatus(String section, Config config, List<String> userPath) {
       .toList() ?? [];
 
   // 获取已安装版本
-  final installDir = Directory('install/$section');
+  final installDir = Directory('$thisExePath/install/$section');
   final installedVersions = installDir.existsSync()
       ? installDir
           .listSync()
@@ -441,7 +447,7 @@ void printSectionList(String section, Config config) {
       .toList() ?? [];
 
   // 获取已安装版本
-  final installDir = Directory('install/$section');
+  final installDir = Directory('$thisExePath/install/$section');
   final installedVersions = installDir.existsSync()
       ? installDir
           .listSync()
@@ -576,9 +582,9 @@ Future<void> installPackage(
   }
 
   try {
-    final cacheDir = Directory('cache/$section/$version');
+    final cacheDir = Directory('$thisExePath/cache/$section/$version');
     cacheDir.createSync(recursive: true);  // 目录创建
-    final installDir = Directory('install/$section/$version');
+    final installDir = Directory('$thisExePath/install/$section/$version');
 
     // 获取压缩包文件名
     final fileName = url.split('/').last;
@@ -753,7 +759,7 @@ Future<String> useCommand(String section, String version, config) async {
     return finalTargetPath;
   }
 
-  final targetDir = Directory('install/$section/$version');
+  final targetDir = Directory('$thisExePath/install/$section/$version');
 
   // 安装状态检查
   if (!targetDir.existsSync()) {
