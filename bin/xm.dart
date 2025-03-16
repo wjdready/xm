@@ -20,7 +20,12 @@ void main(List<String> args) async {
     return;
   }
 
-  if (args[0] == '-x') {
+  if (args.contains('-h') || args.contains('--help')) {
+    _printHelp();
+    return;
+  }
+
+  else if (args[0] == '-x') {
     final userPath = _getUserPath().split(';');
     print('-----------------');
     for (var p in userPath) {
@@ -30,6 +35,15 @@ void main(List<String> args) async {
   }
   else if (args[0] == '-p') {
     printAllModulesStatus(config);
+    return;
+  }
+  else if (args[0] == '--unset-all') {
+
+    print('正在清理所有模块环境变量...');
+    for (final section in config.sections()) {
+      await unsetCommand(section, config);
+    }
+    print('清理完成');
     return;
   }
 
@@ -42,6 +56,27 @@ void main(List<String> args) async {
     print('可用模块: ${config.sections().join(', ')}');
   }
 }
+
+void _printHelp() {
+  final helpText = '''
+XM 多版本管理器 v1.0
+
+使用方式:
+  xm [选项] [模块名称] [命令]
+  -h, --help                   显示帮助信息
+  -p                           显示所有模块状态
+  -x                           显示当前 PATH 环境变量
+  --unset-all                  清理所有模块环境变量
+  [module]                     显示可用版本列表
+  [module] install [version]   安装指定版本
+  [module] use [version]       使用指定版本
+  [module] unset               取消使用当前版本
+  [module] remove [version]    移除已安装版本
+''';
+
+  print(helpText);
+}
+
 
 // 通用模块命令处理
 Future<void> handleSectionCommand(
@@ -239,7 +274,7 @@ Future<void> setUserEnvironmentVariable(String varName, String value) async {
 }
 
 // 新增模块状态生成辅助方法
-String _getModuleStatus(String section, Config config) {
+String _getModuleStatus(String section, Config config, List<String> userPath) {
 
   // 获取本地路径版本
   final localVersions = config.items(section)
@@ -260,7 +295,6 @@ String _getModuleStatus(String section, Config config) {
       : <String>{};
 
   // 获取使用中的版本
-  final userPath = _getUserPath().toLowerCase().split(';');
   final inUseVersion = userPath
       .firstWhere(
         (p) => p.contains('install\\$section\\'),
@@ -269,7 +303,37 @@ String _getModuleStatus(String section, Config config) {
       .split('\\')
       .where((e) => e.isNotEmpty)
       .toList();
+
+  final pathInUseVerion = userPath.where((p) => _isLocalPathInUse(config, section, p)).toSet();
+  Set<String> localInUseVersion = <String>{};
   
+  // 新增：建立路径与版本的映射关系
+  final pathVersionMap = <String, String>{};
+  config.items(section)?.forEach((entry) {
+    if (entry.length >= 2) {
+      final version = entry[0]!;
+      // 新增引号移除逻辑
+      final rawValue = entry[1]!.replaceAll(RegExp(r'^"|"$'), '');
+      final paths = rawValue.split(';');
+      for (var p in paths) {
+        p = p.trim().toLowerCase().replaceAll('/', Platform.pathSeparator);
+        if (p.isNotEmpty) {
+          pathVersionMap[p] = version;
+        }
+      }
+    }
+  });
+  
+  // 检查当前使用的路径对应的版本
+  pathInUseVerion.forEach((usedPath) {
+    final normalizedPath = usedPath.toLowerCase().replaceAll('/', Platform.pathSeparator);
+    pathVersionMap.forEach((path, version) {
+      if (normalizedPath == path) {
+        localInUseVersion.add(version);
+      }
+    });
+  });
+
   String version = '';
   for (var i = 0; i < inUseVersion.length - 1; i++) {
     if (inUseVersion[i] == 'install' && 
@@ -284,7 +348,11 @@ String _getModuleStatus(String section, Config config) {
   final status = StringBuffer();
   if (version.isNotEmpty) {
     status.write('* $version');
-  } else if (installedVersions.isNotEmpty) {
+  } 
+  else if (localInUseVersion.isNotEmpty) {
+    status.write('* ${localInUseVersion.first} (local)');
+  }
+  else if (installedVersions.isNotEmpty) {
     status.write('@ ${installedVersions.first}');
   } else if (localVersions.isNotEmpty) {
     status.write('# ${localVersions.first}'); 
@@ -300,10 +368,12 @@ void printAllModulesStatus(Config config) {
   int maxNameLength = 8; // 初始值为列标题"模块名称"的长度
   int maxStatusLength = 4; // 初始值为列标题"状态"的长度
 
+  final userPath = _getUserPath().toLowerCase().split(';');
+
   // 首次遍历收集最大长度
   for (final section in config.sections()) {
     // ... 状态生成逻辑与之前相同 ...
-    final status = _getModuleStatus(section, config); // 假设抽取出状态生成逻辑
+    final status = _getModuleStatus(section, config, userPath); // 假设抽取出状态生成逻辑
     
     maxNameLength = math.max(maxNameLength, section.length);
     maxStatusLength = math.max(maxStatusLength, status.length);
@@ -323,7 +393,7 @@ void printAllModulesStatus(Config config) {
 
   // 打印数据行
   for (final section in config.sections()) {
-    final status = _getModuleStatus(section, config);
+    final status = _getModuleStatus(section, config, userPath);
     print('| ${section.padRight(nameWidth-2)} | ${status.padRight(statusWidth-2)} |');
     print(borderLine);
   }
@@ -395,7 +465,7 @@ void printSectionList(String section, Config config) {
       .toSet();
 
   final pathInUseVerion = userPath.where((p) => _isLocalPathInUse(config, section, p)).toSet();
-  Set<String> inUseVersion3 = <String>{};
+  Set<String> localInUseVersion = <String>{};
   
   // 新增：建立路径与版本的映射关系
   final pathVersionMap = <String, String>{};
@@ -419,7 +489,7 @@ void printSectionList(String section, Config config) {
     final normalizedPath = usedPath.toLowerCase().replaceAll('/', Platform.pathSeparator);
     pathVersionMap.forEach((path, version) {
       if (normalizedPath == path) {
-        inUseVersion3.add(version);
+        localInUseVersion.add(version);
       }
     });
   });
@@ -430,7 +500,7 @@ void printSectionList(String section, Config config) {
     final version = entry.key;
     final isInstalled = installedVersions.contains(version);
     final isLocal = localPaths.contains(version);
-    final isInUse = inUseVersions.contains(version) || inUseVersion3.contains(version);
+    final isInUse = inUseVersions.contains(version) || localInUseVersion.contains(version);
     
     final status = StringBuffer();
     if (isInUse) {
@@ -594,14 +664,14 @@ Future<void> installPackage(
       } finally {
         client.close();
       }
-      print("\n");
+      print(" ");
     }
 
     // 新增文件类型识别
     final fileExtension = url.split('.').last.toLowerCase();
 
     var archive = Archive();
-    print('正在解压到 ${installDir.absolute.path.replaceAll('/', '\\')}');
+    print('将解压到 ${installDir.absolute.path.replaceAll('/', '\\')}');
 
     if (fileExtension == 'zip') {
       archive = ZipDecoder().decodeBytes(await cachedFile.readAsBytes());
@@ -612,7 +682,7 @@ Future<void> installPackage(
       throw Exception("不支持的压缩格式: $fileExtension");
     }
 
-    extractArchiveToDisk(archive, installDir.path);
+    await extractArchiveToDisk(archive, installDir.path);
 
     print('安装成功');
 
