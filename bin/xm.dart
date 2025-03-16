@@ -727,8 +727,6 @@ Future<String> useCommand(String section, String version, config) async {
         .map((p) => p.replaceAll('/', Platform.pathSeparator)) // 统一路径格式
         .toList();
     
-    print('本地路径: ${paths.join(';')}');
-
     // 检测路径是否存在
     // final validPaths = paths.where((p) => 
     //     Directory(p).existsSync() || File(p).existsSync()).toList();
